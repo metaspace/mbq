@@ -32,6 +32,7 @@ fn main() -> Result<()> {
 fn smtp_connection(config: &Config) -> Result<SmtpTransport> {
     use lettre::transport::smtp::authentication::{Credentials, Mechanism};
     use lettre::transport::smtp::client::{Tls, TlsParameters};
+    use lettre::transport::smtp::PoolConfig;
     let pass = std::process::Command::new("bash")
         .arg("-c")
         .arg(&config.smtp_pass_cmd)
@@ -51,6 +52,7 @@ fn smtp_connection(config: &Config) -> Result<SmtpTransport> {
         .authentication(vec![Mechanism::Plain])
         .port(config.smtp_port)
         .timeout(Some(Duration::from_secs(30)))
+        .pool_config(PoolConfig::new().max_size(1))
         .build();
 
     Ok(sender)
