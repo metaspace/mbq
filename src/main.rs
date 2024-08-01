@@ -50,7 +50,7 @@ fn smtp_connection(config: &Config) -> Result<SmtpTransport> {
         .tls(Tls::Wrapper(tls))
         .authentication(vec![Mechanism::Plain])
         .port(config.smtp_port)
-        .timeout(Some(Duration::from_secs(4)))
+        .timeout(Some(Duration::from_secs(30)))
         .build();
 
     Ok(sender)
