@@ -19,17 +19,22 @@ fn main() -> Result<()> {
     let config = get_config(args.config)?;
 
     match args.command {
-        Command::Enqueue { args: _ } => enqueue(&config)?,
-        Command::Show => show(&config)?,
-        Command::SendAll => send_all(&config)?,
-        Command::ReviveAll => revive_all(&config)?,
-        Command::DropAll => drop_all(&config)?,
+        Some(command) => match command {
+            Command::Enqueue { profile, args: _ } => {
+                enqueue(config.get(&profile).ok_or(anyhow!("Unknown profile"))?)?
+            }
+            Command::Show => show(&config)?,
+            Command::SendAll => send_all(&config)?,
+            Command::ReviveAll => revive_all(&config)?,
+            Command::DropAll => drop_all(&config)?,
+        },
+        None => show(&config)?,
     }
 
     Ok(())
 }
 
-fn smtp_connection(config: &Config) -> Result<SmtpTransport> {
+fn smtp_connection(config: &ConfigEntry) -> Result<SmtpTransport> {
     use lettre::transport::smtp::authentication::{Credentials, Mechanism};
     use lettre::transport::smtp::client::{Tls, TlsParameters};
     use lettre::transport::smtp::PoolConfig;
@@ -59,6 +64,15 @@ fn smtp_connection(config: &Config) -> Result<SmtpTransport> {
 }
 
 fn send_all(config: &Config) -> Result<()> {
+    for (profile,config) in config {
+        send_all_one_profile(profile, config)?;
+    }
+    Ok(())
+}
+
+fn send_all_one_profile(profile: &str, config: &ConfigEntry) -> Result<()> {
+    info!("Processing {profile}");
+
     let sender = smtp_connection(config)?;
     debug!("Testing connection");
     sender.test_connection()?;
@@ -116,14 +130,13 @@ fn send_all(config: &Config) -> Result<()> {
             .send_raw(&envelope, &bytes)
             .context("Failed to send email")?;
 
-
         out_maildir.move_to(&email, &sent_maildir)?;
     }
 
     Ok(())
 }
 
-fn enqueue(config: &Config) -> Result<()> {
+fn enqueue(config: &ConfigEntry) -> Result<()> {
     let stdin = std::io::stdin().lock();
     let data: Vec<u8> = stdin
         .bytes()
@@ -204,15 +217,20 @@ impl Deref for Maildir {
 }
 
 fn show(config: &Config) -> Result<()> {
-    let mut out_maildir = Maildir::from(config.queue_dir.clone());
-    out_maildir.print_entries()?;
+    for (profile, config) in config {
+        println!("Profile {profile}:");
+        let mut out_maildir = Maildir::from(config.queue_dir.clone());
+        out_maildir.print_entries()?;
+    }
     Ok(())
 }
 
 fn drop_all(config: &Config) -> Result<()> {
-    let mut out_maildir = Maildir::from(config.queue_dir.clone());
-    for email in out_maildir.get_emails()?.clone() {
-        out_maildir.delete(&email)?;
+    for (_profile, config) in config {
+        let mut out_maildir = Maildir::from(config.queue_dir.clone());
+        for email in out_maildir.get_emails()?.clone() {
+            out_maildir.delete(&email)?;
+        }
     }
     Ok(())
 }
@@ -231,48 +249,54 @@ fn get_config(path: Option<PathBuf>) -> Result<Config> {
     };
     let config_data = String::from_utf8(read(config_path).context("Failed to read config file")?)?;
     let mut config: Config = toml::from_str(&config_data).context("Failed to parse config file")?;
-    config.queue_dir = shellexpand::full(
-        config
-            .queue_dir
-            .to_str()
-            .ok_or(anyhow!("Failed to parse queue_dir as utf8"))?,
-    )?
-    .into_owned()
-    .into();
-    config.revive_dir = shellexpand::full(
-        config
-            .revive_dir
-            .to_str()
-            .ok_or(anyhow!("Failed to parse revive_dir as utf8"))?,
-    )?
-    .into_owned()
-    .into();
-    config.sent_dir = shellexpand::full(
-        config
-            .sent_dir
-            .to_str()
-            .ok_or(anyhow!("Failed to parse sent_dir as utf8"))?,
-    )?
-    .into_owned()
-    .into();
+
+    // Expand shell escapes in paths
+    for (_, config) in &mut config {
+        config.queue_dir = shellexpand::full(
+            config
+                .queue_dir
+                .to_str()
+                .ok_or(anyhow!("Failed to parse queue_dir as utf8"))?,
+        )?
+        .into_owned()
+        .into();
+        config.revive_dir = shellexpand::full(
+            config
+                .revive_dir
+                .to_str()
+                .ok_or(anyhow!("Failed to parse revive_dir as utf8"))?,
+        )?
+        .into_owned()
+        .into();
+        config.sent_dir = shellexpand::full(
+            config
+                .sent_dir
+                .to_str()
+                .ok_or(anyhow!("Failed to parse sent_dir as utf8"))?,
+        )?
+        .into_owned()
+        .into();
+    }
     Ok(config)
 }
 
 fn revive_all(config: &Config) -> Result<()> {
-    let out_maildir = maildir::Maildir::from(config.queue_dir.clone());
-    let revived_maildir = maildir::Maildir::from(config.revive_dir.clone());
-    revived_maildir.create_dirs()?;
+    for (_profile, config) in config {
+        let out_maildir = maildir::Maildir::from(config.queue_dir.clone());
+        let revived_maildir = maildir::Maildir::from(config.revive_dir.clone());
+        revived_maildir.create_dirs()?;
 
-    for entry in out_maildir.list_cur() {
-        let entry = entry?;
-        let data = std::fs::read(entry.path()).context("Cannot read email from outbox")?;
-        let id = revived_maildir.store_new(&data)?;
-        revived_maildir
-            .move_new_to_cur_with_flags(&id, "D")
-            .context("Cannot store email to drafts folder")?;
-        out_maildir
-            .delete(entry.id())
-            .context("Failed to unlink after moving")?;
+        for entry in out_maildir.list_cur() {
+            let entry = entry?;
+            let data = std::fs::read(entry.path()).context("Cannot read email from outbox")?;
+            let id = revived_maildir.store_new(&data)?;
+            revived_maildir
+                .move_new_to_cur_with_flags(&id, "D")
+                .context("Cannot store email to drafts folder")?;
+            out_maildir
+                .delete(entry.id())
+                .context("Failed to unlink after moving")?;
+        }
     }
 
     Ok(())
@@ -281,11 +305,12 @@ fn revive_all(config: &Config) -> Result<()> {
 #[derive(clap::Parser)]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 
     #[arg(long)]
     config: Option<PathBuf>,
 
+    // For compatibility with `sendmail` - we discard this
     #[arg(short)]
     #[clap(hide = true)]
     ocompat: Option<String>,
@@ -294,6 +319,10 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Command {
     Enqueue {
+        #[clap(long)]
+        profile: String,
+
+        // For compatibility with sendmail - we discard this
         #[clap(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
         args: Vec<String>,
     },
@@ -303,8 +332,10 @@ enum Command {
     DropAll,
 }
 
+type Config = std::collections::HashMap<String, ConfigEntry>;
+
 #[derive(serde::Deserialize, Debug)]
-struct Config {
+struct ConfigEntry {
     queue_dir: PathBuf,
     sent_dir: PathBuf,
     revive_dir: PathBuf,
