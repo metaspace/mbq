@@ -43,7 +43,7 @@ fn smtp_connection(config: &ConfigEntry) -> Result<SmtpTransport> {
         .arg(&config.smtp_pass_cmd)
         .output()?
         .stdout;
-    let pass = String::from_utf8(pass)?;
+    let pass = String::from_utf8(pass)?.trim().to_owned();
 
     let credentials = Credentials::new(config.smtp_user.to_owned(), pass);
 
