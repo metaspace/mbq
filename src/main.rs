@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use lettre::{SmtpTransport, Transport};
-use std::{fs::read, io::Read, ops::Deref, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, fs::read, io::Read, ops::Deref, path::PathBuf, time::Duration};
 //use tap::prelude::*;
 use tracing::{debug, info};
 
@@ -77,10 +77,10 @@ fn send_all_one_profile(profile: &str, config: &ConfigEntry) -> Result<()> {
     debug!("Testing connection");
     sender.test_connection()?;
 
-    let mut out_maildir = Maildir::from(config.queue_dir.clone());
-    let emails = out_maildir.get_emails()?.clone();
+    let out_maildir = Maildir::new(config.queue_dir.clone())?;
+    let emails = out_maildir.get_emails().clone();
 
-    let sent_maildir = Maildir::from(config.sent_dir.clone());
+    let sent_maildir = Maildir::new(config.sent_dir.clone())?;
     sent_maildir.create_dirs()?;
 
     info!("Sending all emails");
@@ -154,28 +154,30 @@ fn enqueue(config: &ConfigEntry) -> Result<()> {
 
 struct Maildir {
     maildir: maildir::Maildir,
-    emails: Option<Vec<String>>,
+    emails: BTreeSet<String>,
 }
 
 impl Maildir {
-    fn get_emails(&mut self) -> Result<&Vec<String>> {
-        if self.emails.is_none() {
-            self.emails = Some(
-                self.maildir
-                    .list_cur()
-                    .into_iter()
-                    .map(|entry| entry.and_then(|entry| Ok(String::from(entry.id()))))
-                    .map(|entry| entry.map_err(|err| err.into()))
-                    .collect::<Result<Vec<String>>>()?,
-            );
-        }
+    fn new<T: Into<PathBuf>>(path: T) -> Result<Self> {
+        let maildir = maildir::Maildir::from(path.into());
 
-        self.emails.as_ref().ok_or(anyhow!("Internal error"))
+        let emails = maildir
+            .list_cur()
+            .into_iter()
+            .map(|entry| entry.and_then(|entry| Ok(String::from(entry.id()))))
+            .map(|entry| entry.map_err(|err| err.into()))
+            .collect::<Result<BTreeSet<String>>>()?;
+
+        Ok(Self { maildir, emails })
+    }
+
+    fn get_emails(&self) -> &BTreeSet<String> {
+        &self.emails
     }
 
     fn print_entries(&mut self) -> Result<()> {
-        let entries = self.get_emails()?.clone();
-        for (idx, id) in entries.into_iter().enumerate() {
+        let entries = self.get_emails().iter();
+        for (idx, id) in entries.enumerate() {
             let mut email = self
                 .maildir
                 .find(&id)
@@ -199,15 +201,6 @@ impl Maildir {
     }
 }
 
-impl<T: Into<PathBuf>> From<T> for Maildir {
-    fn from(value: T) -> Self {
-        Self {
-            maildir: maildir::Maildir::from(value.into()),
-            emails: None,
-        }
-    }
-}
-
 impl Deref for Maildir {
     type Target = maildir::Maildir;
 
@@ -219,7 +212,7 @@ impl Deref for Maildir {
 fn show(config: &Config) -> Result<()> {
     for (profile, config) in config {
         println!("Profile {profile}:");
-        let mut out_maildir = Maildir::from(config.queue_dir.clone());
+        let mut out_maildir = Maildir::new(config.queue_dir.clone())?;
         out_maildir.print_entries()?;
     }
     Ok(())
@@ -227,8 +220,8 @@ fn show(config: &Config) -> Result<()> {
 
 fn drop_all(config: &Config) -> Result<()> {
     for (_profile, config) in config {
-        let mut out_maildir = Maildir::from(config.queue_dir.clone());
-        for email in out_maildir.get_emails()?.clone() {
+        let out_maildir = Maildir::new(config.queue_dir.clone())?;
+        for email in out_maildir.get_emails().clone() {
             out_maildir.delete(&email)?;
         }
     }
