@@ -1,7 +1,14 @@
-use anyhow::{anyhow, Context} ;
+use anyhow::{anyhow, Context};
 use clap::Parser;
 use lettre::{SmtpTransport, Transport};
-use std::{collections::BTreeSet, fs::read, io::Read, ops::Deref, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeSet,
+    fs::read,
+    io::Read,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    time::Duration,
+};
 //use tap::prelude::*;
 use tracing::{debug, info};
 
@@ -25,12 +32,12 @@ fn main() -> Result {
             Command::Enqueue { profile, args: _ } => {
                 enqueue(config.get(&profile).ok_or(anyhow!("Unknown profile"))?)?
             }
-            Command::Show => show(&config)?,
-            Command::SendAll => send_all(&config)?,
-            Command::ReviveAll => revive_all(&config)?,
-            Command::DropAll => drop_all(&config)?,
+            Command::Show { profile } => show(&config, profile.as_deref())?,
+            Command::SendAll { profile } => send_all(&config, profile.as_deref())?,
+            Command::ReviveAll { profile } => revive_all(&config, profile.as_deref())?,
+            Command::DropAll { profile } => drop_all(&config, profile.as_deref())?,
         },
-        None => show(&config)?,
+        None => show(&config, None)?,
     }
 
     Ok(())
@@ -65,11 +72,8 @@ fn smtp_connection(config: &ConfigEntry) -> Result<SmtpTransport> {
     Ok(sender)
 }
 
-fn send_all(config: &Config) -> Result {
-    for (profile, config) in config {
-        send_all_one_profile(profile, config)?;
-    }
-    Ok(())
+fn send_all(config: &Config, profile: Option<&str>) -> Result {
+    config.map(profile, send_all_one_profile)
 }
 
 fn send_all_one_profile(profile: &str, config: &ConfigEntry) -> Result {
@@ -216,21 +220,26 @@ impl Deref for Maildir {
     }
 }
 
-fn show(config: &Config) -> Result {
-    for (profile, config) in config {
-        println!("Profile {profile}:");
-        let mut out_maildir = Maildir::new(config.queue_dir.clone())?;
-        out_maildir.print_entries()?;
-    }
+fn show(config: &Config, profile: Option<&str>) -> Result {
+    config.map(profile, show_profile)
+}
+
+fn show_profile(profile: &str, config: &ConfigEntry) -> Result {
+    println!("Profile {profile}:");
+    let mut out_maildir = Maildir::new(config.queue_dir.clone())?;
+    out_maildir.print_entries()?;
     Ok(())
 }
 
-fn drop_all(config: &Config) -> Result {
-    for (_profile, config) in config {
-        let out_maildir = Maildir::new(config.queue_dir.clone())?;
-        for email in out_maildir.get_emails().clone() {
-            out_maildir.delete(&email)?;
-        }
+fn drop_all(config: &Config, profile: Option<&str>) -> Result {
+    // TODO: Ask for confirmation.
+    config.map(profile, drop_all_one_profile)
+}
+
+fn drop_all_one_profile(_profile: &str, config: &ConfigEntry) -> Result {
+    let out_maildir = Maildir::new(config.queue_dir.clone())?;
+    for email in out_maildir.get_emails().clone() {
+        out_maildir.delete(&email)?;
     }
     Ok(())
 }
@@ -248,10 +257,10 @@ fn get_config(path: Option<PathBuf>) -> Result<Config> {
         p
     };
     let config_data = String::from_utf8(read(config_path).context("Failed to read config file")?)?;
-    let mut config: Config = toml::from_str(&config_data).context("Failed to parse config file")?;
+    let mut config: Config = Config::from_str(config_data)?;
 
     // Expand shell escapes in paths
-    for (_, config) in &mut config {
+    for (_, config) in config.deref_mut() {
         config.queue_dir = shellexpand::full(
             config
                 .queue_dir
@@ -280,25 +289,26 @@ fn get_config(path: Option<PathBuf>) -> Result<Config> {
     Ok(config)
 }
 
-fn revive_all(config: &Config) -> Result {
-    for (_profile, config) in config {
-        let out_maildir = maildir::Maildir::from(config.queue_dir.clone());
-        let revived_maildir = maildir::Maildir::from(config.revive_dir.clone());
-        revived_maildir.create_dirs()?;
+fn revive_all(config: &Config, profile: Option<&str>) -> Result {
+    config.map(profile, revive_all_one_profile)
+}
 
-        for entry in out_maildir.list_cur() {
-            let entry = entry?;
-            let data = std::fs::read(entry.path()).context("Cannot read email from outbox")?;
-            let id = revived_maildir.store_new(&data)?;
-            revived_maildir
-                .move_new_to_cur_with_flags(&id, "D")
-                .context("Cannot store email to drafts folder")?;
-            out_maildir
-                .delete(entry.id())
-                .context("Failed to unlink after moving")?;
-        }
+fn revive_all_one_profile(_profile: &str, config: &ConfigEntry) -> Result {
+    let out_maildir = maildir::Maildir::from(config.queue_dir.clone());
+    let revived_maildir = maildir::Maildir::from(config.revive_dir.clone());
+    revived_maildir.create_dirs()?;
+
+    for entry in out_maildir.list_cur() {
+        let entry = entry?;
+        let data = std::fs::read(entry.path()).context("Cannot read email from outbox")?;
+        let id = revived_maildir.store_new(&data)?;
+        revived_maildir
+            .move_new_to_cur_with_flags(&id, "D")
+            .context("Cannot store email to drafts folder")?;
+        out_maildir
+            .delete(entry.id())
+            .context("Failed to unlink after moving")?;
     }
-
     Ok(())
 }
 
@@ -326,13 +336,66 @@ enum Command {
         #[clap(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
         args: Vec<String>,
     },
-    Show,
-    SendAll,
-    ReviveAll,
-    DropAll,
+    Show {
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    SendAll {
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    ReviveAll {
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    DropAll {
+        #[arg(long)]
+        profile: Option<String>,
+    },
 }
 
-type Config = std::collections::HashMap<String, ConfigEntry>;
+type ConfigInner = std::collections::HashMap<String, ConfigEntry>;
+struct Config(ConfigInner);
+
+impl Config {
+    fn from_str<T: AsRef<str>>(data: T) -> Result<Self> {
+        Ok(Self(
+            toml::from_str(data.as_ref()).context("Failed to parse config file")?,
+        ))
+    }
+
+    fn config_for_profile(&self, profile: impl AsRef<str>) -> Result<&ConfigEntry> {
+        self.0
+            .get(profile.as_ref())
+            .ok_or(anyhow!("Profile not found in config"))
+    }
+
+    fn map(&self, profile: Option<&str>, f: impl Fn(&str, &ConfigEntry) -> Result) -> Result {
+        if let Some(profile) = profile {
+            let config = self.config_for_profile(profile)?;
+            f(profile, config)?;
+        } else {
+            for (profile, config) in &self.0 {
+                f(&profile, &config)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Deref for Config {
+    type Target = ConfigInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Config {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 #[derive(serde::Deserialize, Debug)]
 struct ConfigEntry {
