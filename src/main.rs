@@ -64,7 +64,7 @@ fn smtp_connection(config: &ConfigEntry) -> Result<SmtpTransport> {
 }
 
 fn send_all(config: &Config) -> Result<()> {
-    for (profile,config) in config {
+    for (profile, config) in config {
         send_all_one_profile(profile, config)?;
     }
     Ok(())
