@@ -1,11 +1,13 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context} ;
 use clap::Parser;
 use lettre::{SmtpTransport, Transport};
 use std::{collections::BTreeSet, fs::read, io::Read, ops::Deref, path::PathBuf, time::Duration};
 //use tap::prelude::*;
 use tracing::{debug, info};
 
-fn main() -> Result<()> {
+type Result<T = (), E = anyhow::Error> = anyhow::Result<T, E>;
+
+fn main() -> Result {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
@@ -63,14 +65,14 @@ fn smtp_connection(config: &ConfigEntry) -> Result<SmtpTransport> {
     Ok(sender)
 }
 
-fn send_all(config: &Config) -> Result<()> {
+fn send_all(config: &Config) -> Result {
     for (profile, config) in config {
         send_all_one_profile(profile, config)?;
     }
     Ok(())
 }
 
-fn send_all_one_profile(profile: &str, config: &ConfigEntry) -> Result<()> {
+fn send_all_one_profile(profile: &str, config: &ConfigEntry) -> Result {
     info!("Processing {profile}");
 
     let out_maildir = Maildir::new(config.queue_dir.clone())?;
@@ -141,7 +143,7 @@ fn send_all_one_profile(profile: &str, config: &ConfigEntry) -> Result<()> {
     Ok(())
 }
 
-fn enqueue(config: &ConfigEntry) -> Result<()> {
+fn enqueue(config: &ConfigEntry) -> Result {
     let stdin = std::io::stdin().lock();
     let data: Vec<u8> = stdin
         .bytes()
@@ -180,7 +182,7 @@ impl Maildir {
         &self.emails
     }
 
-    fn print_entries(&mut self) -> Result<()> {
+    fn print_entries(&mut self) -> Result {
         let entries = self.get_emails().iter();
         for (idx, id) in entries.enumerate() {
             let mut email = self
@@ -214,7 +216,7 @@ impl Deref for Maildir {
     }
 }
 
-fn show(config: &Config) -> Result<()> {
+fn show(config: &Config) -> Result {
     for (profile, config) in config {
         println!("Profile {profile}:");
         let mut out_maildir = Maildir::new(config.queue_dir.clone())?;
@@ -223,7 +225,7 @@ fn show(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn drop_all(config: &Config) -> Result<()> {
+fn drop_all(config: &Config) -> Result {
     for (_profile, config) in config {
         let out_maildir = Maildir::new(config.queue_dir.clone())?;
         for email in out_maildir.get_emails().clone() {
@@ -278,7 +280,7 @@ fn get_config(path: Option<PathBuf>) -> Result<Config> {
     Ok(config)
 }
 
-fn revive_all(config: &Config) -> Result<()> {
+fn revive_all(config: &Config) -> Result {
     for (_profile, config) in config {
         let out_maildir = maildir::Maildir::from(config.queue_dir.clone());
         let revived_maildir = maildir::Maildir::from(config.revive_dir.clone());
