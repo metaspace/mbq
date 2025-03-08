@@ -25,7 +25,7 @@ fn main() -> Result {
     debug!("args: {args}");
 
     let args = Cli::parse();
-    let config = get_config(args.config)?;
+    let config = Config::new(args.config)?;
 
     match args.command {
         Some(command) => match command {
@@ -35,7 +35,14 @@ fn main() -> Result {
             Command::Show { profile } => show(&config, profile.as_deref())?,
             Command::SendAll { profile } => send_all(&config, profile.as_deref())?,
             Command::ReviveAll { profile } => revive_all(&config, profile.as_deref())?,
-            Command::DropAll { profile } => drop_all(&config, profile.as_deref())?,
+            Command::Drop { profile, idx } => {
+                if let Some(idx) = idx {
+                    let profile = profile.expect("expected profile to be present");
+                    drop_one(&config, &profile, idx)?
+                } else {
+                    drop_all(&config, profile.as_deref())?
+                }
+            }
         },
         None => show(&config, None)?,
     }
@@ -80,7 +87,7 @@ fn send_all_one_profile(profile: &str, config: &ConfigEntry) -> Result {
     info!("Processing {profile}");
 
     let out_maildir = Maildir::new(config.queue_dir.clone())?;
-    let emails = out_maildir.get_emails().clone();
+    let emails = out_maildir.emails().clone();
 
     if emails.is_empty() {
         info!("No emails");
@@ -182,12 +189,12 @@ impl Maildir {
         Ok(Self { maildir, emails })
     }
 
-    fn get_emails(&self) -> &BTreeSet<String> {
+    fn emails(&self) -> &BTreeSet<String> {
         &self.emails
     }
 
     fn print_entries(&mut self) -> Result {
-        let entries = self.get_emails().iter();
+        let entries = self.emails().iter();
         for (idx, id) in entries.enumerate() {
             let mut email = self
                 .maildir
@@ -236,57 +243,24 @@ fn drop_all(config: &Config, profile: Option<&str>) -> Result {
     config.map(profile, drop_all_one_profile)
 }
 
-fn drop_all_one_profile(_profile: &str, config: &ConfigEntry) -> Result {
+fn drop_one(config: &Config, profile: &str, idx: u32) -> Result {
+    let config = config.config_for_profile(profile)?;
     let out_maildir = Maildir::new(config.queue_dir.clone())?;
-    for email in out_maildir.get_emails().clone() {
-        out_maildir.delete(&email)?;
-    }
+    let email = out_maildir
+        .emails()
+        .iter()
+        .nth(idx.try_into()?)
+        .ok_or(anyhow!("Invalid index"))?;
+    out_maildir.delete(email)?;
     Ok(())
 }
 
-fn get_config(path: Option<PathBuf>) -> Result<Config> {
-    let config_path = if let Some(p) = path {
-        p
-    } else {
-        let mut p: PathBuf =
-            directories_next::ProjectDirs::from("dk.metaspace", "Metaspace", "mbq")
-                .ok_or(anyhow!("Failed to locate config dir"))?
-                .config_dir()
-                .into();
-        p.push("config");
-        p
-    };
-    let config_data = String::from_utf8(read(config_path).context("Failed to read config file")?)?;
-    let mut config: Config = Config::from_str(config_data)?;
-
-    // Expand shell escapes in paths
-    for (_, config) in config.deref_mut() {
-        config.queue_dir = shellexpand::full(
-            config
-                .queue_dir
-                .to_str()
-                .ok_or(anyhow!("Failed to parse queue_dir as utf8"))?,
-        )?
-        .into_owned()
-        .into();
-        config.revive_dir = shellexpand::full(
-            config
-                .revive_dir
-                .to_str()
-                .ok_or(anyhow!("Failed to parse revive_dir as utf8"))?,
-        )?
-        .into_owned()
-        .into();
-        config.sent_dir = shellexpand::full(
-            config
-                .sent_dir
-                .to_str()
-                .ok_or(anyhow!("Failed to parse sent_dir as utf8"))?,
-        )?
-        .into_owned()
-        .into();
+fn drop_all_one_profile(_profile: &str, config: &ConfigEntry) -> Result {
+    let out_maildir = Maildir::new(config.queue_dir.clone())?;
+    for email in out_maildir.emails().clone() {
+        out_maildir.delete(&email)?;
     }
-    Ok(config)
+    Ok(())
 }
 
 fn revive_all(config: &Config, profile: Option<&str>) -> Result {
@@ -348,9 +322,11 @@ enum Command {
         #[arg(long)]
         profile: Option<String>,
     },
-    DropAll {
+    Drop {
         #[arg(long)]
         profile: Option<String>,
+        #[arg(long, requires = "profile")]
+        idx: Option<u32>,
     },
 }
 
@@ -358,6 +334,52 @@ type ConfigInner = std::collections::HashMap<String, ConfigEntry>;
 struct Config(ConfigInner);
 
 impl Config {
+    fn new(path: Option<PathBuf>) -> Result<Self> {
+        let config_path = if let Some(p) = path {
+            p
+        } else {
+            let mut p: PathBuf =
+                directories_next::ProjectDirs::from("dk.metaspace", "Metaspace", "mbq")
+                    .ok_or(anyhow!("Failed to locate config dir"))?
+                    .config_dir()
+                    .into();
+            p.push("config");
+            p
+        };
+        let config_data =
+            String::from_utf8(read(config_path).context("Failed to read config file")?)?;
+        let mut config: Config = Config::from_str(config_data)?;
+
+        // Expand shell escapes in paths
+        for (_, config) in config.deref_mut() {
+            config.queue_dir = shellexpand::full(
+                config
+                    .queue_dir
+                    .to_str()
+                    .ok_or(anyhow!("Failed to parse queue_dir as utf8"))?,
+            )?
+            .into_owned()
+            .into();
+            config.revive_dir = shellexpand::full(
+                config
+                    .revive_dir
+                    .to_str()
+                    .ok_or(anyhow!("Failed to parse revive_dir as utf8"))?,
+            )?
+            .into_owned()
+            .into();
+            config.sent_dir = shellexpand::full(
+                config
+                    .sent_dir
+                    .to_str()
+                    .ok_or(anyhow!("Failed to parse sent_dir as utf8"))?,
+            )?
+            .into_owned()
+            .into();
+        }
+        Ok(config)
+    }
+
     fn from_str<T: AsRef<str>>(data: T) -> Result<Self> {
         Ok(Self(
             toml::from_str(data.as_ref()).context("Failed to parse config file")?,
