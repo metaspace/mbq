@@ -3,13 +3,13 @@ use clap::Parser;
 use lettre::{SmtpTransport, Transport};
 use std::{
     collections::BTreeSet,
+    ffi::OsStr,
     fs::read,
     io::Read,
     ops::{Deref, DerefMut},
     path::PathBuf,
     time::Duration,
 };
-//use tap::prelude::*;
 use tracing::{debug, info};
 
 type Result<T = (), E = anyhow::Error> = anyhow::Result<T, E>;
@@ -34,7 +34,14 @@ fn main() -> Result {
             }
             Command::Show { profile } => show(&config, profile.as_deref())?,
             Command::SendAll { profile } => send_all(&config, profile.as_deref())?,
-            Command::ReviveAll { profile } => revive_all(&config, profile.as_deref())?,
+            Command::Revive { profile, idx } => {
+                if let Some(idx) = idx {
+                    let profile = profile.expect("expected profile to be present");
+                    revive_one(&config, &profile, idx)?
+                } else {
+                    revive_all(&config, profile.as_deref())?
+                }
+            }
             Command::Drop { profile, idx } => {
                 if let Some(idx) = idx {
                     let profile = profile.expect("expected profile to be present");
@@ -217,6 +224,24 @@ impl Maildir {
         }
         Ok(())
     }
+
+    fn revive_one(&self, revive_path: impl AsRef<OsStr>, email: &str) -> Result {
+        // `maildir::Maildir` has some unfortunate choices for `From`
+        // implementations.
+        let path: PathBuf = revive_path.as_ref().into();
+        let revived_maildir = maildir::Maildir::from(path);
+        revived_maildir.create_dirs()?;
+        let entry = self.find(email).ok_or(anyhow!("cound not find email"))?;
+        let data = std::fs::read(entry.path()).context("Cannot read email from outbox")?;
+        let id = revived_maildir.store_new(&data)?;
+        revived_maildir
+            .move_new_to_cur_with_flags(&id, "D")
+            .context("Cannot store email to drafts folder")?;
+        self.delete(entry.id())
+            .context("Failed to unlink after moving")?;
+
+        Ok(())
+    }
 }
 
 impl Deref for Maildir {
@@ -238,11 +263,6 @@ fn show_profile(profile: &str, config: &ConfigEntry) -> Result {
     Ok(())
 }
 
-fn drop_all(config: &Config, profile: Option<&str>) -> Result {
-    // TODO: Ask for confirmation.
-    config.map(profile, drop_all_one_profile)
-}
-
 fn drop_one(config: &Config, profile: &str, idx: u32) -> Result {
     let config = config.config_for_profile(profile)?;
     let out_maildir = Maildir::new(config.queue_dir.clone())?;
@@ -255,6 +275,11 @@ fn drop_one(config: &Config, profile: &str, idx: u32) -> Result {
     Ok(())
 }
 
+fn drop_all(config: &Config, profile: Option<&str>) -> Result {
+    // TODO: Ask for confirmation.
+    config.map(profile, drop_all_one_profile)
+}
+
 fn drop_all_one_profile(_profile: &str, config: &ConfigEntry) -> Result {
     let out_maildir = Maildir::new(config.queue_dir.clone())?;
     for email in out_maildir.emails().clone() {
@@ -263,25 +288,27 @@ fn drop_all_one_profile(_profile: &str, config: &ConfigEntry) -> Result {
     Ok(())
 }
 
+fn revive_one(config: &Config, profile: &str, idx: u32) -> Result {
+    let config = config.config_for_profile(profile)?;
+
+    let out_maildir = Maildir::new(config.queue_dir.clone())?;
+    let email = out_maildir
+        .emails()
+        .iter()
+        .nth(idx.try_into()?)
+        .ok_or(anyhow!("Invalid index"))?;
+    out_maildir.revive_one(&config.revive_dir, &email)?;
+    Ok(())
+}
+
 fn revive_all(config: &Config, profile: Option<&str>) -> Result {
     config.map(profile, revive_all_one_profile)
 }
 
 fn revive_all_one_profile(_profile: &str, config: &ConfigEntry) -> Result {
-    let out_maildir = maildir::Maildir::from(config.queue_dir.clone());
-    let revived_maildir = maildir::Maildir::from(config.revive_dir.clone());
-    revived_maildir.create_dirs()?;
-
-    for entry in out_maildir.list_cur() {
-        let entry = entry?;
-        let data = std::fs::read(entry.path()).context("Cannot read email from outbox")?;
-        let id = revived_maildir.store_new(&data)?;
-        revived_maildir
-            .move_new_to_cur_with_flags(&id, "D")
-            .context("Cannot store email to drafts folder")?;
-        out_maildir
-            .delete(entry.id())
-            .context("Failed to unlink after moving")?;
+    let out_maildir = Maildir::new(config.queue_dir.clone())?;
+    for email in out_maildir.emails() {
+        out_maildir.revive_one(&config.revive_dir, email)?;
     }
     Ok(())
 }
@@ -318,9 +345,11 @@ enum Command {
         #[arg(long)]
         profile: Option<String>,
     },
-    ReviveAll {
+    Revive {
         #[arg(long)]
         profile: Option<String>,
+        #[arg(long, requires = "profile")]
+        idx: Option<u32>,
     },
     Drop {
         #[arg(long)]
