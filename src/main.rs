@@ -73,15 +73,20 @@ fn send_all(config: &Config) -> Result<()> {
 fn send_all_one_profile(profile: &str, config: &ConfigEntry) -> Result<()> {
     info!("Processing {profile}");
 
-    let sender = smtp_connection(config)?;
-    debug!("Testing connection");
-    sender.test_connection()?;
-
     let out_maildir = Maildir::new(config.queue_dir.clone())?;
     let emails = out_maildir.get_emails().clone();
 
+    if emails.is_empty() {
+        info!("No emails");
+        return Ok(());
+    }
+
     let sent_maildir = Maildir::new(config.sent_dir.clone())?;
     sent_maildir.create_dirs()?;
+
+    let sender = smtp_connection(config)?;
+    debug!("Testing connection");
+    sender.test_connection()?;
 
     info!("Sending all emails");
     for email in emails {
