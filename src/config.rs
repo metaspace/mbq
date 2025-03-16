@@ -1,10 +1,10 @@
-use std::ops::DerefMut;
-use std::ops::Deref;
-use std::fs::read;
 use super::Result;
-use std::path::PathBuf;
-use anyhow::anyhow;
-use anyhow::Context;
+use anyhow::{anyhow, Context};
+use std::{
+    fs::read,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+};
 
 pub(crate) type ConfigInner = std::collections::HashMap<String, ConfigEntry>;
 
@@ -69,7 +69,11 @@ impl Config {
             .ok_or(anyhow!("Profile not found in config"))
     }
 
-    pub(crate) fn map(&self, profile: Option<&str>, f: impl Fn(&str, &ConfigEntry) -> Result) -> Result {
+    pub(crate) fn map(
+        &self,
+        profile: Option<&str>,
+        f: impl Fn(&str, &ConfigEntry) -> Result,
+    ) -> Result {
         if let Some(profile) = profile {
             let config = self.config_for_profile(profile)?;
             f(profile, config)?;

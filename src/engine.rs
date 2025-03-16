@@ -1,18 +1,8 @@
+use crate::{config, Result};
 use anyhow::{anyhow, Context};
-use lettre::Transport;
-use std::{
-    collections::BTreeSet,
-    ffi::OsStr,
-    io::Read,
-    ops::Deref,
-    path::PathBuf,
-    time::Duration,
-};
-use lettre::SmtpTransport;
-use crate::Result;
-use crate::config;
-use tracing::{info, debug};
-
+use lettre::{SmtpTransport, Transport};
+use std::{collections::BTreeSet, ffi::OsStr, io::Read, ops::Deref, path::PathBuf, time::Duration};
+use tracing::{debug, info};
 
 pub(crate) struct Maildir {
     pub(crate) maildir: maildir::Maildir,
@@ -41,26 +31,30 @@ impl Maildir {
     pub(crate) fn print_entries(&mut self) -> Result {
         let entries = self.emails().iter();
         for (idx, id) in entries.enumerate() {
-            let mut email = self
-                .maildir
-                .find(&id)
-                .ok_or(anyhow!("Failed to find email"))?;
-            let parsed = email.parsed()?;
-            let from = parsed
-                .get_headers()
-                .into_iter()
-                .find(|name| name.get_key_ref() == "From")
-                .ok_or(anyhow!("Email has no from field"))?
-                .get_value_utf8()?;
-            let subject = parsed
-                .get_headers()
-                .into_iter()
-                .find(|name| name.get_key_ref() == "Subject")
-                .ok_or(anyhow!("Email has no from field"))?
-                .get_value_utf8()?;
-            println!("[{idx}] From: {from}, Subject: {subject}")
+            println!("[{idx}] {}", self.email_display(id)?);
         }
         Ok(())
+    }
+
+    pub(crate) fn email_display(&self, id: &str) -> Result<String> {
+        let mut email = self
+            .maildir
+            .find(&id)
+            .ok_or(anyhow!("Failed to find email"))?;
+        let parsed = email.parsed()?;
+        let from = parsed
+            .get_headers()
+            .into_iter()
+            .find(|name| name.get_key_ref() == "From")
+            .ok_or(anyhow!("Email has no from field"))?
+            .get_value_utf8()?;
+        let subject = parsed
+            .get_headers()
+            .into_iter()
+            .find(|name| name.get_key_ref() == "Subject")
+            .ok_or(anyhow!("Email has no from field"))?
+            .get_value_utf8()?;
+        Ok(format!("From: {from}, Subject: {subject}"))
     }
 
     pub(crate) fn revive_one(&self, revive_path: impl AsRef<OsStr>, email: &str) -> Result {
@@ -120,21 +114,44 @@ pub(crate) fn smtp_connection(config: &config::ConfigEntry) -> Result<SmtpTransp
         .port(config.smtp_port)
         .timeout(Some(Duration::from_secs(30)))
         .pool_config(PoolConfig::new().max_size(1));
-    let sender = pool_config
-        .build();
+    let sender = pool_config.build();
 
     Ok(sender)
 }
 
-pub(crate) fn send_all(config: &config::Config, profile: Option<&str>) -> Result {
-    config.map(profile, send_all_one_profile)
+pub(crate) fn send(
+    config: &config::Config,
+    profile: Option<&str>,
+    idx: Option<Vec<u32>>,
+) -> Result {
+    config.map(profile, |profile: &str, config: &config::ConfigEntry| {
+        send_one_profile(profile, config, &idx)
+    })
 }
 
-pub(crate) fn send_all_one_profile(profile: &str, config: &config::ConfigEntry) -> Result {
+pub(crate) fn send_one_profile(
+    profile: &str,
+    config: &config::ConfigEntry,
+    idx: &Option<Vec<u32>>,
+) -> Result {
     info!("Processing {profile}");
 
     let out_maildir = Maildir::new(config.queue_dir.clone())?;
-    let emails = out_maildir.emails().clone();
+    let emails: Vec<_> = if let Some(idx) = idx {
+        let max = out_maildir.emails().len() - 1;
+        if idx.iter().all(|i| (0..(max as u32)).contains(i)) {
+            return Err(anyhow!("Invalid index"));
+        }
+
+        out_maildir
+            .emails()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, email)| idx.contains(&(i as u32)).then_some(email))
+            .collect()
+    } else {
+        out_maildir.emails().iter().collect()
+    };
 
     if emails.is_empty() {
         info!("No emails");
