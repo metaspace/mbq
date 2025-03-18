@@ -163,7 +163,9 @@ pub(crate) fn send_one_profile(
 
     let sender = smtp_connection(config)?;
     debug!("Testing connection");
-    sender.test_connection()?;
+    sender
+        .test_connection()
+        .context("Error while testing smtp connection")?;
 
     info!("Sending all emails");
     for email in emails {
